@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -11,15 +12,21 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 var (
-	users = map[string]string{"user1": "password123", "user2": "secret456"}
-	kv    nats.KeyValue
-	nc    *nats.Conn
+	users  = map[string]string{"user1": "password123", "user2": "secret456"}
+	kv     jetstream.KeyValue
+	nc     *nats.Conn
+	ctx    context.Context
+	cancel context.CancelFunc
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
 	// Start the embedded NATS server
 	ns := startNATSServer()
 	defer ns.Shutdown()
@@ -57,6 +64,7 @@ func startNATSServer() *server.Server {
 	opts := &server.Options{
 		Host:      "127.0.0.1",
 		JetStream: true,
+		StoreDir:  "./data",
 	}
 	ns, err := server.NewServer(opts)
 	if err != nil {
@@ -71,41 +79,34 @@ func startNATSServer() *server.Server {
 }
 
 func setupKV(nc *nats.Conn) {
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		log.Fatal(err)
 	}
-	kv, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "sessions"})
+
+	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "sessions"})
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
 func setupCommandsWQ() {
-	js, err := nc.JetStream()
+	js, err := jetstream.New(nc)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Check if the stream already exists
-	_, err = js.StreamInfo("COMMAND_STREAM")
-	if err == nil {
-		log.Println("COMMAND_STREAM already exists")
-		return
-	}
-
-	// Define the stream configuration
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:      "COMMAND_STREAM",
-		Subjects:  []string{"commands"}, // Commands will be published to this subject
-		Retention: nats.WorkQueuePolicy, // Work queue retention, messages are kept until acknowledged
-		Storage:   nats.FileStorage,     // Use file-based storage
-		Replicas:  1,                    // Number of replicas (for HA, set to >1)
+	s, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "wq-commands",
+		Subjects:  []string{"commands"},      // Commands will be published to this subject
+		Retention: jetstream.WorkQueuePolicy, // Work queue retention, messages are kept until acknowledged
+		Storage:   jetstream.MemoryStorage,   // Use memory-based storage
+		Replicas:  1,                         // Number of replicas (for HA, set to >1)
 	})
 	if err != nil {
 		log.Fatalf("Error creating COMMAND_STREAM: %v", err)
 	}
-	log.Println("COMMAND_STREAM created successfully")
+	log.Println(s.CachedInfo().Config.Name, "created successfully")
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +115,11 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if pass, ok := users[username]; ok && pass == password {
 		sessionID := generateSessionID()
-		kv.Put(sessionID, []byte(username))
+		id, err := kv.Put(ctx, sessionID, []byte(username))
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Print("Session ID: ", id)
 
 		http.SetCookie(w, &http.Cookie{
 			Name:     "session_id",
@@ -136,7 +141,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kv.Delete(cookie.Value)
+	kv.Delete(ctx, cookie.Value)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_id",
@@ -157,7 +162,7 @@ func withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		entry, err := kv.Get(cookie.Value)
+		entry, err := kv.Get(ctx, cookie.Value)
 		if err != nil {
 			http.Error(w, "Session not found or expired", http.StatusUnauthorized)
 			return
@@ -174,39 +179,41 @@ func commandHandler(w http.ResponseWriter, r *http.Request) {
 
 	publishToNATS("commands", fmt.Sprintf("%s|%s", sessionID.Value, command))
 	w.Write([]byte("Command received!"))
+	fmt.Println("got command")
 }
 
 func processCommands() {
-	js, _ := nc.JetStream()
+	js, _ := jetstream.New(nc)
 
-	// Subscribe to the "commands" subject using JetStream pull-based subscription
-	sub, _ := js.PullSubscribe("commands", "command-worker")
+	cons, err := js.CreateOrUpdateConsumer(ctx, "wq-commands", jetstream.ConsumerConfig{
+		Durable:   "commands-woker",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	go func() {
-		for {
-			// Fetch 1 message at a time from the command queue
-			msgs, err := sub.Fetch(1)
-			if err != nil {
-				log.Printf("Error fetching command: %v", err)
-				continue
-			}
+		// Fetch 1 message at a time from the command queue
+		_, err := cons.Consume(func(msg jetstream.Msg) {
+			parts := strings.SplitN(string(msg.Data()), "|", 2)
+			sessionID := parts[0]
+			command := parts[1]
 
-			for _, msg := range msgs {
-				// Split the message to extract sessionID and command
-				parts := strings.SplitN(string(msg.Data), "|", 2)
-				sessionID := parts[0]
-				command := parts[1]
+			// Simulate processing the command
+			result := fmt.Sprintf("Processed command: %s for session: %s", command, sessionID)
+			log.Printf("Command processed: %s", result)
 
-				// Simulate processing the command
-				result := fmt.Sprintf("Processed command: %s for session: %s", command, sessionID)
-				log.Printf("Command processed: %s", result)
+			// Publish the result to the "commandResults" subject
+			nc.Publish("commandResults", []byte(fmt.Sprintf("%s|%s", sessionID, result)))
 
-				// Publish the result to the "commandResults" subject
-				js.Publish("commandResults", []byte(fmt.Sprintf("%s|%s", sessionID, result)))
-
-				// Acknowledge the message so it’s removed from the work queue
-				msg.Ack()
-			}
+			// Acknowledge the message so it’s removed from the work queue
+			msg.Ack()
+		}, jetstream.ConsumeErrHandler(func(consumeCtx jetstream.ConsumeContext, err error) {
+			log.Printf("Error consuming message: %v", err)
+		}))
+		if err != nil {
+			log.Fatal(err)
 		}
 	}()
 }
@@ -245,5 +252,8 @@ func generateSessionID() string {
 }
 
 func publishToNATS(subject, msg string) {
-	nc.Publish(subject, []byte(msg))
+	err := nc.Publish(subject, []byte(msg))
+	if err != nil {
+		log.Printf("Error publishing message: %v", err)
+	}
 }
