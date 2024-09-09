@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NATS CQRS Example</title>
+    <script src="https://unpkg.com/htmx.org@1.5.0"></script>
+</head>
+<body>
+    <h2>Login</h2>
+    <form hx-post="/login" hx-target="#login-result">
+        <input type="text" name="username" placeholder="Username" required>
+        <input type="password" name="password" placeholder="Password" required>
+        <button type="submit">Login</button>
+    </form>
+    <div id="login-result"></div>
+
+    <h2>Commands</h2>
+    <form hx-post="/commands" hx-target="#command-result">
+        <input type="text" name="command" placeholder="Enter command">
+        <button type="submit">Send Command</button>
+    </form>
+    <div id="command-result"></div>
+
+    <h2>Queries</h2>
+    <form hx-post="/queries" hx-target="#query-result">
+        <input type="text" name="query" placeholder="Enter query">
+        <button type="submit">Send Query</button>
+    </form>
+    <div id="query-result"></div>
+
+    <h2>Results</h2>
+    <div id="results" style="border: 1px solid #ddd; padding: 10px; height: 200px; overflow-y: scroll;"></div>
+
+    <script>
+        // Set up SSE to listen to all commandResults
+        const evtSource = new EventSource('/stream');
+        evtSource.onmessage = function(event) {
+            const resultsDiv = document.getElementById("results");
+            // Append the new event data to the results div
+            resultsDiv.innerHTML += event.data + "<br>";
+            // Auto-scroll to the bottom
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        };
+    </script>
+</body>
+</html>
+
