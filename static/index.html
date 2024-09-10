@@ -34,7 +34,7 @@
 
     <script>
         // Set up SSE to listen to all commandResults
-        const evtSource = new EventSource('/stream/commands');
+        const evtSource = new EventSource('/stream/commands/');
         evtSource.onmessage = function(event) {
             const resultsDiv = document.getElementById("results");
             // Append the new event data to the results div
@@ -49,7 +49,7 @@
 
     <script>
         // Set up SSE to listen to all commandResults
-        const qSource = new EventSource('/stream/queries');
+        const qSource = new EventSource('/stream/queries/');
         qSource.onmessage = function(event) {
             const resultsDiv = document.getElementById("qresults");
             // Append the new event data to the results div

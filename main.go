@@ -26,7 +26,7 @@ var (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
 	// Start the embedded NATS server
 	ns := startNATSServer()
 	defer ns.Shutdown()
@@ -44,16 +44,16 @@ func main() {
 	setupQueriesWQ()
 	setupKV(nc)
 
-	processCommands()
-	processQueries()
+	go processCommands()
+	go processQueries()
 
 	// Define handlers
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/logout", logoutHandler)
 	http.HandleFunc("/commands", withAuth(commandHandler))
 	http.HandleFunc("/queries", withAuth(queryHandler))
-	http.HandleFunc("/stream/commands", withAuth(streamHandler)) // SSE
-	http.HandleFunc("/stream/queries", withAuth(queriesHandler)) // SSE
+	http.HandleFunc("/stream/commands/", withAuth(streamHandler)) // SSE
+	http.HandleFunc("/stream/queries/", withAuth(queriesHandler)) // SSE
 
 	// Serve static files (HTML)
 	http.Handle("/", http.FileServer(http.Dir("./static")))
@@ -87,7 +87,10 @@ func setupKV(nc *nats.Conn) {
 		log.Fatal(err)
 	}
 
-	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "sessions"})
+	kv, err = js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket: "sessions",
+		TTL:    time.Duration(60 * time.Minute),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
