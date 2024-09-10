@@ -29,12 +29,12 @@
     </form>
     <div id="query-result"></div>
 
-    <h2>Results</h2>
+    <h2>Processed Commands</h2>
     <div id="results" style="border: 1px solid #ddd; padding: 10px; height: 200px; overflow-y: scroll;"></div>
 
     <script>
         // Set up SSE to listen to all commandResults
-        const evtSource = new EventSource('/stream');
+        const evtSource = new EventSource('/stream/commands');
         evtSource.onmessage = function(event) {
             const resultsDiv = document.getElementById("results");
             // Append the new event data to the results div
@@ -43,6 +43,23 @@
             resultsDiv.scrollTop = resultsDiv.scrollHeight;
         };
     </script>
+
+    <h2>Processed Queries</h2>
+    <div id="qresults" style="border: 1px solid #ddd; padding: 10px; height: 200px; overflow-y: scroll;"></div>
+
+    <script>
+        // Set up SSE to listen to all commandResults
+        const qSource = new EventSource('/stream/queries');
+        qSource.onmessage = function(event) {
+            const resultsDiv = document.getElementById("qresults");
+            // Append the new event data to the results div
+            resultsDiv.innerHTML += event.data + "<br>";
+            // Auto-scroll to the bottom
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        };
+    </script>
+
+
 </body>
 </html>
 
